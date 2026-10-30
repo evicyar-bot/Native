@@ -1,1 +1,32 @@
-
+name: build-native
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.10.2
+      - run: unzip -q megastudiya-native.zip
+      - name: Ключ подписи из секретов
+        env:
+          MS_KEYSTORE_B64: ${{ secrets.MS_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$MS_KEYSTORE_B64" ]; then
+            echo "$MS_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/ms.p12"
+            echo "MS_KEYSTORE_PATH=$RUNNER_TEMP/ms.p12" >> "$GITHUB_ENV"
+          fi
+      - name: Build
+        working-directory: megastudiya-native
+        env:
+          MS_STORE_PASS: ${{ secrets.MS_STORE_PASS }}
+        run: gradle assembleRelease --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: megastudiya-native
+          path: megastudiya-native/app/build/outputs/apk/release/app-release.apk
