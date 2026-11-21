@@ -1,0 +1,73 @@
+# Проверка сборки Native n0.85: доказывает, что Kotlin-код компилируется, и пишет понятный итог (успех или ошибка с причиной).
+# Как использовать:
+#   1. Положить этот файл в репозиторий как .github/workflows/check-build-n085.yml
+#   2. В корне репозитория должен лежать megastudiya-native.zip (тот же, что использует build-native).
+#   3. GitHub -> Actions -> check-build-n085 -> Run workflow. Итог смотреть в Summary запуска (вверху страницы).
+# Секреты и подпись не нужны. Собирается отладочный APK ТОЛЬКО как доказательство сборки: он подписан другим ключом,
+# поэтому поверх установленной релизной версии не встанет. Рабочий APK даёт build-native.
+name: check-build-n085
+on: workflow_dispatch
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Проверка архива
+        id: zip
+        run: |
+          fail() { echo "$1" > reason.txt; echo "::error::$1"; exit 1; }
+          [ -f megastudiya-native.zip ] || fail "В корне репозитория нет файла megastudiya-native.zip (проверь имя и что он лежит не в подпапке и не внутри другого архива)."
+          unzip -q -o megastudiya-native.zip || fail "Архив megastudiya-native.zip не распаковывается (повреждён или это не zip)."
+          [ -d megastudiya-native ] || fail "Внутри архива нет корневой папки megastudiya-native/ (сейчас в корне: $(unzip -Z1 megastudiya-native.zip | cut -d/ -f1 | sort -u | head -5 | tr '\n' ' '))."
+          [ -f megastudiya-native/app/build.gradle.kts ] || fail "В архиве нет app/build.gradle.kts: структура проекта нарушена."
+          V=$(grep -o 'versionName = "[^"]*"' megastudiya-native/app/build.gradle.kts | head -1)
+          echo "$V" > version.txt
+          case "$V" in *n0.85*) ;; *) fail "В архиве версия не n0.85 ($V). Загружен не тот архив." ;; esac
+
+      - name: Сборка (Kotlin)
+        id: build
+        working-directory: megastudiya-native
+        run: |
+          set -o pipefail
+          gradle :app:assembleDebug --no-daemon --console=plain 2>&1 | tee ../build.log
+
+      - name: Итог
+        if: always()
+        run: |
+          S="$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.zip.outcome }}" != "success" ]; then
+            { echo "## ❌ ОШИБКА: архив исходников"; echo; cat reason.txt 2>/dev/null; } >> "$S"
+          elif [ "${{ steps.build.outcome }}" = "success" ]; then
+            APK=$(ls megastudiya-native/app/build/outputs/apk/debug/*.apk 2>/dev/null | head -1)
+            { echo "## ✅ УСПЕХ: Kotlin-код n0.85 собирается"; echo; cat version.txt
+              echo "APK (отладочный, только доказательство): $(basename "$APK"), $(du -h "$APK" | cut -f1)"
+              echo "Где: внизу этой страницы, раздел Artifacts, файл apk-n0.85-debug."
+              echo "Рабочий релизный APK даёт build-native."; } >> "$S"
+          else
+            { echo "## ❌ ОШИБКА: сборка не прошла"; echo
+              if grep -q '^e: ' build.log; then
+                echo "Причина: ошибка компиляции Kotlin. Первые ошибки (файл:строка:символ сообщение):"; echo '```'
+                grep '^e: ' build.log | sed 's#file:///[^ ]*/megastudiya-native/##' | head -20; echo '```'
+              else
+                echo "Причина: ошибка Gradle (не компиляции Kotlin):"; echo '```'
+                sed -n '/What went wrong/,/^\* Try/p' build.log | head -20; echo '```'
+              fi
+              echo "Полный лог: шаг «Сборка (Kotlin)»."; } >> "$S"
+          fi
+          cat "$S"
+
+      - name: APK-доказательство
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-n0.85-debug
+          path: megastudiya-native/app/build/outputs/apk/debug/*.apk
+          retention-days: 14
